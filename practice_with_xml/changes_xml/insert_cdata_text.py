@@ -1,8 +1,10 @@
 """
-Вставка SQL в конец CDATA-блока без изменения структуры файла вне CDATA.
+Вставка SQL в конец последнего CDATA-блока в XML-файле.
 
-Подход: работаем с файлом как с текстом через re.
-lxml НЕ используем — он переформатирует отступы и переносы.
+Процесс:
+1. Читаем исходный файл (SOURCE_FILE)
+2. Вставляем SQL в конец последнего CDATA
+3. Сохраняем результат в TARGET_FILE (папка создаётся автоматически)
 """
 
 import re
@@ -12,64 +14,44 @@ from pathlib import Path
 
 # ─── Настройки ────────────────────────────────────────────────────────────────
 
-BASE_DIR   = Path(__file__).parent / "migrations"
-INPUT_FILE = BASE_DIR / "migrations.xml"
+# Исходный файл — откуда читаем
+SOURCE_FILE = Path(r"D:\test_migrations\migrations.xml")
 
-# Якорь для поиска нужного CDATA.
-# Скрипт найдёт CDATA внутри блока, который содержит этот текст.
-# Можно указать id миграции, уникальный комментарий, часть SQL — что угодно.
-ANCHOR = 'migration id="003"'
+# Целевой файл — куда сохраняем результат (папка создаётся автоматически)
+TARGET_FILE = Path(r"E:\main_migrations\26.04.2026\migrations.xml")
 
-# SQL который дописываем в конец CDATA.
-# Первая строка-комментарий используется как уникальный маркер —
-# при повторном запуске скрипт найдёт её и не будет вставлять дубль.
+# SQL который вставляем в конец последнего CDATA
 NEW_SQL = """
--- patch 2025-01-15: add status column
-ALTER TABLE orders ADD COLUMN status VARCHAR(50) DEFAULT 'pending';
+ALTER TEST TABLE orders ADD COLUMN status VARCHAR(50) DEFAULT 'pending';
 UPDATE orders SET status = 'completed' WHERE amount > 0;"""
 
-# Уникальный маркер для проверки дублей — берём первую строку NEW_SQL
+# Маркер для защиты от дублей — первая строка SQL
+# Если эта строка уже есть в последнем CDATA — вставка пропускается
 MARKER = NEW_SQL.strip().splitlines()[0]
 
 
 # ─── Ядро ─────────────────────────────────────────────────────────────────────
 
-# Находит CDATA-блок (любой, включая многострочный)
 CDATA_RE = re.compile(r'<!\[CDATA\[(.*?)\]\]>', re.DOTALL)
 
 
-def find_cdata_for_anchor(content: str, anchor: str):
-    """
-    Ищем CDATA-блок внутри фрагмента, который начинается с anchor.
-    Возвращает match объект или None.
-    """
-    anchor_pos = content.find(anchor)
-    if anchor_pos == -1:
-        return None
-
-    # Ищем CDATA только после якоря
-    return CDATA_RE.search(content, anchor_pos)
+def get_last_cdata_match(content: str):
+    """Возвращает match последнего CDATA-блока в файле."""
+    matches = list(CDATA_RE.finditer(content))
+    if not matches:
+        raise ValueError("❌ CDATA-блоки не найдены в файле")
+    return matches[-1]
 
 
-def append_sql_to_cdata(content: str, anchor: str, new_sql: str):
-    """
-    Находит нужный CDATA по якорю и дописывает SQL в конец.
-    Возвращает (new_content, old_cdata, new_cdata).
-    """
-    match = find_cdata_for_anchor(content, anchor)
-    if not match:
-        raise ValueError(f"❌ CDATA не найден после якоря: '{anchor}'")
+def append_sql_to_last_cdata(content: str, new_sql: str):
+    """Дописывает SQL в конец последнего CDATA. Возвращает (new_content, old_body, new_body)."""
+    match = get_last_cdata_match(content)
 
-    old_cdata_body = match.group(1)           # содержимое между [[ и ]]
-    new_cdata_body = old_cdata_body.rstrip() + "\n" + new_sql.strip() + "\n        "
+    old_body = match.group(1)
+    new_body = old_body.rstrip() + "\n" + new_sql.strip() + "\n        "
 
-    # Заменяем только этот конкретный CDATA (по позиции, не глобально)
-    new_full = f"<![CDATA[{new_cdata_body}]]>"
-
-    # Используем позицию из match чтобы не задеть другие блоки
-    new_content = content[:match.start()] + new_full + content[match.end():]
-
-    return new_content, old_cdata_body, new_cdata_body
+    new_content = content[:match.start()] + f"<![CDATA[{new_body}]]>" + content[match.end():]
+    return new_content, old_body, new_body
 
 
 # ─── Верификация ──────────────────────────────────────────────────────────────
@@ -78,81 +60,77 @@ def sha256(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def verify(original: str, updated: str, anchor: str, new_sql: str):
-    print("\n─── Верификация ───────────────────────────────────────")
+def verify(original: str, updated: str, new_sql: str):
+    print("\n─── Верификация ─────────────────────────────────────")
 
     # 1. Структура вне CDATA не изменилась
-    original_outside = CDATA_RE.sub("__CDATA__", original)
-    updated_outside  = CDATA_RE.sub("__CDATA__", updated)
-
-    if original_outside == updated_outside:
-        print("✅ Структура вне CDATA — не изменилась (пробелы, отступы, теги)")
+    orig_skeleton    = CDATA_RE.sub("__CDATA__", original)
+    updated_skeleton = CDATA_RE.sub("__CDATA__", updated)
+    if orig_skeleton == updated_skeleton:
+        print("✅ Структура вне CDATA не изменилась")
     else:
         print("❌ Структура вне CDATA изменилась!")
-        for i, (a, b) in enumerate(zip(original_outside, updated_outside)):
+        for i, (a, b) in enumerate(zip(orig_skeleton, updated_skeleton)):
             if a != b:
                 print(f"   Первое отличие на символе {i}: {repr(a)} → {repr(b)}")
                 break
 
-    # 2. Нужный CDATA найден и содержит новый SQL
-    match = find_cdata_for_anchor(updated, anchor)
-    if match and new_sql.strip() in match.group(1):
-        print("✅ Новый SQL присутствует в целевом CDATA")
+    # 2. SQL присутствует в последнем CDATA
+    last_match = get_last_cdata_match(updated)
+    if new_sql.strip() in last_match.group(1):
+        print("✅ Новый SQL присутствует в последнем CDATA")
     else:
-        print("❌ Новый SQL НЕ найден в целевом CDATA")
+        print("❌ Новый SQL НЕ найден в последнем CDATA")
 
-    # 3. Остальные CDATA-блоки не тронуты
-    original_cdatas = CDATA_RE.findall(original)
-    updated_cdatas  = CDATA_RE.findall(updated)
-
-    unchanged = sum(
-        1 for o, u in zip(original_cdatas, updated_cdatas) if o == u
-    )
-    changed = len(original_cdatas) - unchanged
-    print(f"✅ Нетронутых CDATA-блоков: {unchanged} из {len(original_cdatas)}")
-    print(f"   Изменённых блоков: {changed} (ожидаем 1)")
+    # 3. Остальные блоки не тронуты
+    orig_cdatas    = CDATA_RE.findall(original)
+    updated_cdatas = CDATA_RE.findall(updated)
+    unchanged = sum(1 for o, u in zip(orig_cdatas, updated_cdatas) if o == u)
+    print(f"✅ Нетронутых CDATA-блоков: {unchanged} из {len(orig_cdatas)}")
+    print(f"   Изменённых блоков: {len(orig_cdatas) - unchanged} (ожидаем 1)")
 
     # 4. Хэши для справки
     print(f"\n   SHA-256 до:    {sha256(original)[:16]}...")
     print(f"   SHA-256 после: {sha256(updated)[:16]}...")
-    print("───────────────────────────────────────────────────────")
+    print("─────────────────────────────────────────────────────")
 
 
 # ─── Запуск ───────────────────────────────────────────────────────────────────
 
 def main():
-    input_path = Path(INPUT_FILE)
+    # Проверяем исходный файл
+    if not SOURCE_FILE.exists():
+        raise FileNotFoundError(f"Исходный файл не найден: {SOURCE_FILE}")
 
-    if not input_path.exists():
-        raise FileNotFoundError(f"Файл не найден: {input_path}")
+    print(f"📂 Источник: {SOURCE_FILE}  ({SOURCE_FILE.stat().st_size:,} байт)")
+    print(f"📁 Цель:     {TARGET_FILE}")
 
-    print(f"📂 Читаем: {input_path}  ({input_path.stat().st_size:,} байт)")
+    original = SOURCE_FILE.read_text(encoding="utf-8")
 
-    original = input_path.read_text(encoding="utf-8")
+    # Показываем последний CDATA
+    last_match = get_last_cdata_match(original)
+    print(f"\n── Последний CDATA ──")
+    print(last_match.group(1).strip())
 
-    print(f"🔍 Якорь: '{ANCHOR}'")
-    print(f"🔍 Маркер дубля: '{MARKER}'")
-
-    # Защита от дублей — ищем маркер в нужном CDATA
-    match = find_cdata_for_anchor(original, ANCHOR)
-    if match and MARKER in match.group(1):
-        print("\n⚠️  Этот SQL уже есть в CDATA — повторная вставка пропущена.")
+    # Защита от дублей — проверяем в исходнике
+    if MARKER in last_match.group(1):
+        print(f"\n⚠️  Этот SQL уже есть в последнем CDATA — вставка пропущена.")
+        print(f"   Маркер: '{MARKER}'")
         return
 
     # Вставка
-    updated, old_body, new_body = append_sql_to_cdata(original, ANCHOR, NEW_SQL)
+    updated, old_body, new_body = append_sql_to_last_cdata(original, NEW_SQL)
 
-    print(f"\n── CDATA до ({len(old_body)} симв.) ──")
-    print(old_body.strip())
-    print(f"\n── CDATA после ({len(new_body)} симв.) ──")
+    print(f"\n── CDATA после вставки ──")
     print(new_body.strip())
 
-    # Верификация до записи
-    verify(original, updated, ANCHOR, NEW_SQL)
+    # Верификация
+    verify(original, updated, NEW_SQL)
 
-    # Пишем обратно в тот же файл
-    input_path.write_text(updated, encoding="utf-8")
-    print(f"\nФайл обновлён: {input_path}  ({input_path.stat().st_size:,} байт)")
+    # Создаём папку если не существует и сохраняем в TARGET_FILE
+    TARGET_FILE.parent.mkdir(parents=True, exist_ok=True)
+    TARGET_FILE.write_text(updated, encoding="utf-8")
+    print(f"\n💾 Сохранено: {TARGET_FILE}  ({TARGET_FILE.stat().st_size:,} байт)")
 
 
 if __name__ == "__main__":
