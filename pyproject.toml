@@ -3,7 +3,7 @@ name = "sandbox-ideas"
 version = "0.1.0"
 description = ""
 authors = [
-    {name = "DmitriyFrolov2",email = "dmitrii.frolov2018@yandex.ru"}
+    {name = "Dmitriy",email = "dmitrii"}
 ]
 requires-python = "^3.14"
 dependencies = [
