@@ -152,7 +152,7 @@ def main():
 
     # Пишем обратно в тот же файл
     input_path.write_text(updated, encoding="utf-8")
-    print(f"\n💾 Файл обновлён: {input_path}  ({input_path.stat().st_size:,} байт)")
+    print(f"\nФайл обновлён: {input_path}  ({input_path.stat().st_size:,} байт)")
 
 
 if __name__ == "__main__":
