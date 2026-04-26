@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<migrations>
+
+    <migration id="001" version="1.0.0">
+        <description>Initial schema</description>
+        <checksum>a1b2c3d4e5f6</checksum>
+        <script><![CDATA[
+CREATE TABLE users (
+    id   SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(200) UNIQUE
+);
+        ]]></script>
+    </migration>
+
+    <migration id="002" version="1.1.0">
+        <description>Add orders table</description>
+        <checksum>b2c3d4e5f6a1</checksum>
+        <script><![CDATA[
+CREATE TABLE orders (
+    id      SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id),
+    amount  DECIMAL(10,2),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+        ]]></script>
+    </migration>
+
+    <migration id="003" version="1.2.0">
+        <description>Add indexes</description>
+        <checksum>c3d4e5f6a1b2</checksum>
+        <script><![CDATA[
+CREATE INDEX idx_orders_user_id ON orders(user_id);
+CREATE INDEX idx_orders_created_at ON orders(created_at);
+-- patch 2025-01-15: add status column
+ALTER TABLE orders ADD COLUMN status VARCHAR(50) DEFAULT 'pending';
+UPDATE orders SET status = 'completed' WHERE amount > 0;
+        ]]></script>
+    </migration>
+
+</migrations>
